@@ -926,4 +926,3 @@ static int __init init_aboard(void)
 
 subsys_initcall(init_project);
 late_initcall(init_aboard);
-

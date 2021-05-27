@@ -4733,7 +4733,6 @@ int ufs_fill_info(struct ufs_hba *hba)
 	strcat(ufs_vendor_and_rev, " ");
 	strcat(ufs_vendor_and_rev, ufs_rev);
 
-	push_component_info(UFS, ufs_product_id, ufs_vendor_and_rev);
 out:
 	return err;
 

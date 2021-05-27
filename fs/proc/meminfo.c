@@ -24,9 +24,6 @@
 #include <linux/oem/oneplus_ion.h>
 #endif
 
-int read_fastrpc_usage(void);
-int kgsl_pool_size_total(void);
-
 void __attribute__((weak)) arch_report_meminfo(struct seq_file *m)
 {
 }
@@ -184,8 +181,6 @@ static int meminfo_proc_show(struct seq_file *m, void *v)
 	show_val_kb(m, "IonTotalUsed:   ", ion_total() >> PAGE_SHIFT);
 #endif
 #endif
-	show_val_kb(m, "FastRPCUsed:    ", read_fastrpc_usage());
-	show_val_kb(m, "KgslCache:      ", kgsl_pool_size_total());
 	show_defrag_free(m);
 	show_real_freemem(m, i.freeram);
 
