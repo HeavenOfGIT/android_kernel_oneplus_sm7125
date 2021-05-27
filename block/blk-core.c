@@ -2447,17 +2447,6 @@ blk_qc_t submit_bio(struct bio *bio)
 		}
 	}
 
-
-
-#ifdef CONFIG_MEMPLUS
-        if (current_is_swapind())
-                bio->bi_opf |= REQ_FG;
-        else if (high_prio_for_task(current))
-                bio->bi_opf |= REQ_FG;
-#else
-        if (high_prio_for_task(current))
-                bio->bi_opf |= REQ_FG;
-#endif
 	/*
 	 * If we're reading data that is part of the userspace
 	 * workingset, count submission time as memory stall. When the
