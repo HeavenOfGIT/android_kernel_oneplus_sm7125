@@ -645,8 +645,8 @@ osm_cpufreq_fast_switch(struct cpufreq_policy *policy, unsigned int target_freq)
 		}
 	}
 
-	trace_find_freq(idx_cache, target_freq, index, policy->freq_table[index].frequency,
-		policy->cpu, op_enable, dp_level_mode, dp_level);
+	// trace_find_freq(idx_cache, target_freq, index, policy->freq_table[index].frequency,
+	// 	policy->cpu, op_enable, dp_level_mode, dp_level);
 
 	osm_cpufreq_target_index(policy, index);
 

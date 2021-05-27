@@ -51,9 +51,6 @@
 #ifdef CONFIG_ONEPLUS_FG_OPT
 extern unsigned int ht_fuse_boost;
 #endif
-#ifdef CONFIG_IM
-#include <linux/oem/im.h>
-#endif
 #ifdef CONFIG_CONTROL_CENTER
 #include <linux/oem/control_center.h>
 #endif
@@ -8468,7 +8465,7 @@ out:
 	trace_sched_task_util(p, next_cpu, backup_cpu, target_cpu, sync,
 			need_idle, fbt_env.fastpath, placement_boost,
 			rtg_target ? cpumask_first(rtg_target) : -1, is_uxtop,
-			start_t, boosted);
+			start_t);
 	return target_cpu;
 }
 
@@ -11421,7 +11418,6 @@ no_move:
 				busiest->active_balance = 1;
 				busiest->push_cpu = this_cpu;
 				active_balance = 1;
-				mark_reserved(this_cpu);
 			}
 			raw_spin_unlock_irqrestore(&busiest->lock, flags);
 

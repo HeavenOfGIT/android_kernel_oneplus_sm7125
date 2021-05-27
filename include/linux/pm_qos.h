@@ -8,6 +8,7 @@
 #include <linux/plist.h>
 #include <linux/notifier.h>
 #include <linux/device.h>
+#include <linux/workqueue.h>
 #include <linux/cpumask.h>
 #include <linux/interrupt.h>
 
@@ -17,6 +18,22 @@ enum {
 	PM_QOS_NETWORK_LATENCY,
 	PM_QOS_NETWORK_THROUGHPUT,
 	PM_QOS_MEMORY_BANDWIDTH,
+	PM_QOS_C0_CPUFREQ_MAX,
+	PM_QOS_C0_CPUFREQ_MIN,
+	PM_QOS_C1_CPUFREQ_MAX,
+	PM_QOS_C1_CPUFREQ_MIN,
+	PM_QOS_C2_CPUFREQ_MAX,
+	PM_QOS_C2_CPUFREQ_MIN,
+	PM_QOS_DEVFREQ_MAX,
+	PM_QOS_DEVFREQ_MIN,
+
+	/* add for thermal*/
+	PM_QOS_MSM_THERMAL,
+	PM_QOS_SKIN_THERMAL,
+	PM_QOS_MMW0_THERMAL,
+	PM_QOS_MMW1_THERMAL,
+	PM_QOS_MMW2_THERMAL,
+	PM_QOS_MODEM_SKIN_THERMAL,
 
 	/* insert new class ID */
 	PM_QOS_NUM_CLASSES,
@@ -29,6 +46,8 @@ enum pm_qos_flags_status {
 	PM_QOS_FLAGS_ALL,
 };
 
+#define PM_QOS_DYNAMIC_THERMAL_DEFAULT_VALUE  0
+
 #define PM_QOS_DEFAULT_VALUE -1
 
 #define PM_QOS_CPU_DMA_LAT_DEFAULT_VALUE	(2000 * USEC_PER_SEC)
@@ -39,6 +58,17 @@ enum pm_qos_flags_status {
 #define PM_QOS_LATENCY_TOLERANCE_DEFAULT_VALUE	0
 #define PM_QOS_LATENCY_TOLERANCE_NO_CONSTRAINT	(-1)
 #define PM_QOS_LATENCY_ANY			((s32)(~(__u32)0 >> 1))
+
+#define        MIN_CPUFREQ  0
+#define        MAX_CPUFREQ  0x40
+#define        MASK_CPUFREQ 0xE0
+
+#define PM_QOS_CPUFREQ_MAX_DEFAULT_VALUE       MAX_CPUFREQ
+#define PM_QOS_CPUFREQ_MIN_DEFAULT_VALUE       MIN_CPUFREQ
+#define PM_QOS_DEVFREQ_MAX_DEFAULT_VALUE       MAX_CPUFREQ
+#define PM_QOS_DEVFREQ_MIN_DEFAULT_VALUE       MIN_CPUFREQ
+
+extern void msm_cpuidle_set_sleep_disable(bool disable);
 
 #define PM_QOS_FLAG_NO_POWER_OFF	(1 << 0)
 #define PM_QOS_FLAG_REMOTE_WAKEUP	(1 << 1)
@@ -61,6 +91,7 @@ struct pm_qos_request {
 #endif
 	struct plist_node node;
 	int pm_qos_class;
+	struct delayed_work work; /* for pm_qos_update_request_timeout */
 };
 
 struct pm_qos_flags_request {
@@ -140,6 +171,8 @@ void pm_qos_add_request(struct pm_qos_request *req, int pm_qos_class,
 			s32 value);
 void pm_qos_update_request(struct pm_qos_request *req,
 			   s32 new_value);
+void pm_qos_update_request_timeout(struct pm_qos_request *req,
+				   s32 new_value, unsigned long timeout_us);
 void pm_qos_remove_request(struct pm_qos_request *req);
 
 int pm_qos_request(int pm_qos_class);
