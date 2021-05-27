@@ -48,6 +48,18 @@
 #define CREATE_TRACE_POINTS
 #include <trace/events/sched.h>
 
+#ifdef CONFIG_ONEPLUS_HEALTHINFO
+#include <linux/oem/oneplus_healthinfo.h>
+#endif
+
+#ifdef CONFIG_HOUSTON
+#include <oneplus/houston/houston_helper.h>
+#endif
+
+#ifdef CONFIG_IM
+#include <linux/oem/im.h>
+#endif
+
 DEFINE_PER_CPU_SHARED_ALIGNED(struct rq, runqueues);
 
 /*
@@ -816,6 +828,11 @@ void deactivate_task(struct rq *rq, struct task_struct *p, int flags)
 		clear_ed_task(p, rq);
 
 	dequeue_task(rq, p, flags);
+
+#if defined(CONFIG_CONTROL_CENTER) && defined(CONFIG_IM)
+		if (unlikely(im_ux(p)))
+			restore_user_nice_safe(p);
+#endif
 }
 
 /*
@@ -901,6 +918,16 @@ void check_preempt_curr(struct rq *rq, struct task_struct *p, int flags)
 {
 	const struct sched_class *class;
 
+#ifdef CONFIG_UXCHAIN
+	u64 wallclock = sched_ktime_clock();
+
+	if (sysctl_uxchain_enabled &&
+		(sysctl_launcher_boost_enabled ||
+		wallclock - rq->curr->oncpu_time < PREEMPT_DISABLE_NS) &&
+		(rq->curr->static_ux || rq->curr->dynamic_ux) &&
+		!(p->flags & PF_WQ_WORKER) && !task_has_rt_policy(p))
+		return;
+#endif
 	if (p->sched_class == rq->curr->sched_class) {
 		rq->curr->sched_class->check_preempt_curr(rq, p, flags);
 	} else {
@@ -976,14 +1003,9 @@ static struct rq *move_queued_task(struct rq *rq, struct rq_flags *rf,
 
 	p->on_rq = TASK_ON_RQ_MIGRATING;
 	dequeue_task(rq, p, DEQUEUE_NOCLOCK);
-#ifdef CONFIG_SCHED_WALT
 	double_lock_balance(rq, cpu_rq(new_cpu));
 	set_task_cpu(p, new_cpu);
 	double_rq_unlock(cpu_rq(new_cpu), rq);
-#else
-	set_task_cpu(p, new_cpu);
-	rq_unlock(rq, rf);
-#endif
 
 	rq = cpu_rq(new_cpu);
 
@@ -2301,6 +2323,9 @@ static void __sched_fork(unsigned long clone_flags, struct task_struct *p)
 	p->se.nr_migrations		= 0;
 	p->se.vruntime			= 0;
 	p->last_sleep_ts		= 0;
+	p->boost                = 0;
+	p->boost_expires        = 0;
+	p->boost_period         = 0;
 
 	INIT_LIST_HEAD(&p->se.group_node);
 
@@ -2486,6 +2511,8 @@ int sched_fork(unsigned long clone_flags, struct task_struct *p)
 	 */
 	p->prio = current->normal_prio;
 
+	p->compensate_need = 0;
+
 	/*
 	 * Revert to default priority/policy on fork if requested.
 	 */
@@ -2493,10 +2520,16 @@ int sched_fork(unsigned long clone_flags, struct task_struct *p)
 		if (task_has_dl_policy(p) || task_has_rt_policy(p)) {
 			p->policy = SCHED_NORMAL;
 			p->static_prio = NICE_TO_PRIO(0);
+#ifdef CONFIG_CONTROL_CENTER
+			p->cached_prio = p->static_prio;
+#endif
 			p->rt_priority = 0;
 		} else if (PRIO_TO_NICE(p->static_prio) < 0)
+#ifdef CONFIG_CONTROL_CENTER
+			p->cached_prio = p->static_prio = NICE_TO_PRIO(0);
+#else
 			p->static_prio = NICE_TO_PRIO(0);
-
+#endif
 		p->prio = p->normal_prio = __normal_prio(p);
 		set_load_weight(p);
 
@@ -2584,6 +2617,7 @@ void wake_up_new_task(struct task_struct *p)
 	raw_spin_lock_irqsave(&p->pi_lock, rf.flags);
 
 	p->state = TASK_RUNNING;
+
 #ifdef CONFIG_SMP
 	/*
 	 * Fork balancing, do it here and not earlier because:
@@ -2731,50 +2765,6 @@ prepare_task_switch(struct rq *rq, struct task_struct *prev,
 	prepare_arch_switch(next);
 }
 
-void release_task_stack(struct task_struct *tsk);
-static void task_async_free(struct work_struct *work)
-{
-	struct task_struct *t = container_of(work, typeof(*t), async_free.work);
-	bool free_stack = READ_ONCE(t->async_free.free_stack);
-
-	atomic_set(&t->async_free.running, 0);
-
-	if (free_stack) {
-		release_task_stack(t);
-		put_task_struct(t);
-	} else {
-		__put_task_struct(t);
-	}
-}
-
-static void finish_task_switch_dead(struct task_struct *prev)
-{
-	if (atomic_cmpxchg(&prev->async_free.running, 0, 1)) {
-		put_task_stack(prev);
-		put_task_struct(prev);
-		return;
-	}
-
-	if (atomic_dec_and_test(&prev->stack_refcount)) {
-		prev->async_free.free_stack = true;
-	} else if (atomic_dec_and_test(&prev->usage)) {
-		prev->async_free.free_stack = false;
-	} else {
-		atomic_set(&prev->async_free.running, 0);
-		return;
-	}
-
-	INIT_WORK(&prev->async_free.work, task_async_free);
-	queue_work(system_unbound_wq, &prev->async_free.work);
-}
-
-static void mmdrop_async_free(struct work_struct *work)
-{
-	struct mm_struct *mm = container_of(work, typeof(*mm), async_put_work);
-
-	__mmdrop(mm);
-}
-
 /**
  * finish_task_switch - clean up after a task-switch
  * @prev: the thread we just switched away from.
@@ -2848,10 +2838,8 @@ static struct rq *finish_task_switch(struct task_struct *prev)
 	kcov_finish_switch(current);
 
 	fire_sched_in_preempt_notifiers(current);
-	if (mm && atomic_dec_and_test(&mm->mm_count)) {
-		INIT_WORK(&mm->async_put_work, mmdrop_async_free);
-		queue_work(system_unbound_wq, &mm->async_put_work);
-	}
+	if (mm)
+		mmdrop(mm);
 	if (unlikely(prev_state  == TASK_DEAD)) {
 			if (prev->sched_class->task_dead)
 				prev->sched_class->task_dead(prev);
@@ -2862,7 +2850,11 @@ static struct rq *finish_task_switch(struct task_struct *prev)
 			 */
 			kprobe_flush_task(prev);
 
-			finish_task_switch_dead(prev);
+			/* Task is done with its stack. */
+			put_task_stack(prev);
+
+			put_task_struct(prev);
+
 	}
 
 	tick_nohz_task_switch();
@@ -3620,8 +3612,19 @@ static void __sched notrace __schedule(bool preempt)
 		 */
 		++*switch_count;
 
+#ifdef CONFIG_ONEPLUS_HEALTHINFO
+		if (prev->sched_class == &rt_sched_class && ohm_rtinfo_ctrl == true)
+			rt_thresh_times_record(prev, cpu);
+#endif
+#ifdef CONFIG_UXCHAIN
+		prev->oncpu_time = 0;
+		next->oncpu_time = wallclock;
+#endif
 		trace_sched_switch(preempt, prev, next);
 
+#ifdef CONFIG_HOUSTON
+		ht_sched_switch_update(prev, next);
+#endif
 		/* Also unlocks the rq: */
 		rq = context_switch(rq, prev, next, &rf);
 	} else {
@@ -4018,7 +4021,34 @@ static inline int rt_effective_prio(struct task_struct *p, int prio)
 }
 #endif
 
-void set_user_nice(struct task_struct *p, long nice)
+#ifdef CONFIG_CONTROL_CENTER
+void restore_user_nice_safe(struct task_struct *p)
+{
+	long nice = PRIO_TO_NICE(p->cached_prio);
+
+	if (rt_prio(p->prio))
+		return;
+
+	if (task_nice(p) == nice || nice < MIN_NICE || nice > MAX_NICE)
+		return;
+
+	if (task_on_rq_queued(p))
+		return;
+
+	if (task_current(task_rq(p), p))
+		return;
+
+	if (!time_after64(get_jiffies_64(), p->nice_effect_ts))
+		return;
+
+	p->static_prio = NICE_TO_PRIO(nice);
+	set_load_weight(p);
+	p->prio = effective_prio(p);
+
+	p->nice_effect_ts = ULLONG_MAX;
+}
+
+void set_user_nice_no_cache(struct task_struct *p, long nice)
 {
 	bool queued, running;
 	int old_prio, delta;
@@ -4027,6 +4057,7 @@ void set_user_nice(struct task_struct *p, long nice)
 
 	if (task_nice(p) == nice || nice < MIN_NICE || nice > MAX_NICE)
 		return;
+
 	/*
 	 * We have to be careful, if called from sys_setpriority(),
 	 * the task might be in the middle of scheduling on another CPU.
@@ -4052,6 +4083,67 @@ void set_user_nice(struct task_struct *p, long nice)
 		put_prev_task(rq, p);
 
 	p->static_prio = NICE_TO_PRIO(nice);
+	set_load_weight(p);
+	old_prio = p->prio;
+	p->prio = effective_prio(p);
+	delta = p->prio - old_prio;
+
+	if (queued) {
+		enqueue_task(rq, p, ENQUEUE_RESTORE | ENQUEUE_NOCLOCK);
+		if (delta < 0 || (delta > 0 && task_running(rq, p)))
+			resched_curr(rq);
+	}
+	if (running)
+		set_curr_task(rq, p);
+out_unlock:
+	task_rq_unlock(rq, p, &rf);
+}
+EXPORT_SYMBOL(set_user_nice_no_cache);
+#endif
+
+void set_user_nice(struct task_struct *p, long nice)
+{
+	bool queued, running;
+	int old_prio, delta;
+	struct rq_flags rf;
+	struct rq *rq;
+
+#ifdef CONFIG_CONTROL_CENTER
+	if (task_nice(p) == nice || nice < MIN_NICE || nice > MAX_NICE) {
+		p->cached_prio = p->static_prio;
+		return;
+	}
+#else
+	if (task_nice(p) == nice || nice < MIN_NICE || nice > MAX_NICE)
+		return;
+#endif
+
+	/*
+	 * We have to be careful, if called from sys_setpriority(),
+	 * the task might be in the middle of scheduling on another CPU.
+	 */
+	rq = task_rq_lock(p, &rf);
+	update_rq_clock(rq);
+
+
+	if (task_has_dl_policy(p) || task_has_rt_policy(p)) {
+		p->static_prio = NICE_TO_PRIO(nice);
+#ifdef CONFIG_CONTROL_CENTER
+		p->cached_prio = p->static_prio;
+#endif
+		goto out_unlock;
+	}
+	queued = task_on_rq_queued(p);
+	running = task_current(rq, p);
+	if (queued)
+		dequeue_task(rq, p, DEQUEUE_SAVE | DEQUEUE_NOCLOCK);
+	if (running)
+		put_prev_task(rq, p);
+
+	p->static_prio = NICE_TO_PRIO(nice);
+#ifdef CONFIG_CONTROL_CENTER
+	p->cached_prio = p->static_prio;
+#endif
 	set_load_weight(p);
 	old_prio = p->prio;
 	p->prio = effective_prio(p);
@@ -4195,13 +4287,17 @@ static void __setscheduler_params(struct task_struct *p,
 	if (policy == SETPARAM_POLICY)
 		policy = p->policy;
 
-	/* Replace SCHED_FIFO with SCHED_RR to reduce latency */
-	p->policy = policy == SCHED_FIFO ? SCHED_RR : policy;
+	p->policy = policy;
 
 	if (dl_policy(policy))
 		__setparam_dl(p, attr);
 	else if (fair_policy(policy))
+#ifdef CONFIG_CONTROL_CENTER
+		p->cached_prio =
+			p->static_prio = NICE_TO_PRIO(attr->sched_nice);
+#else
 		p->static_prio = NICE_TO_PRIO(attr->sched_nice);
+#endif
 
 	/*
 	 * __sched_setscheduler() ensures attr->sched_priority == 0 when
@@ -4964,71 +5060,22 @@ out_put_task:
 
 char sched_lib_name[LIB_PATH_LENGTH];
 unsigned int sched_lib_mask_force;
-struct libname_node {
-	char *name;
-	struct list_head list;
-};
-static LIST_HEAD(__sched_lib_name_list);
-static DEFINE_SPINLOCK(__sched_lib_name_lock);
-
-/*
- * A sysctl callback for handling 'sched_lib_name' operation. Except processing
- * the data with the usual function 'proc_dostring()', additionally tokenize the
- * input text with the dilimiter ',' and store in a linked list
- * '__sched_lib_name_list'.
- */
-int sysctl_sched_lib_name_handler(struct ctl_table *table, int write,
-				  void __user *buffer, size_t *lenp,
-				  loff_t *ppos)
-{
-	int ret;
-	char *curr, *next;
-	char dup_sched_lib_name[LIB_PATH_LENGTH];
-	struct libname_node *pos, *tmp;
-
-	ret = proc_dostring(table, write, buffer, lenp, ppos);
-	if (write && !ret) {
-		spin_lock(&__sched_lib_name_lock);
-		/* Free the old list. */
-		if (!list_empty(&__sched_lib_name_list)) {
-			list_for_each_entry_safe (
-				pos, tmp, &__sched_lib_name_list, list) {
-				list_del(&pos->list);
-				kfree(pos->name);
-				kfree(pos);
-			}
-		}
-
-		if (strnlen(sched_lib_name, LIB_PATH_LENGTH) == 0) {
-			spin_unlock(&__sched_lib_name_lock);
-			return 0;
-		}
-
-		/* Split sched_lib_name by ',' and store in a linked list. */
-		strlcpy(dup_sched_lib_name, sched_lib_name, LIB_PATH_LENGTH);
-		next = dup_sched_lib_name;
-		while ((curr = strsep(&next, ",")) != NULL) {
-			pos = kmalloc(sizeof(struct libname_node), GFP_KERNEL);
-			pos->name = kstrdup(curr, GFP_KERNEL);
-			list_add_tail(&pos->list, &__sched_lib_name_list);
-		}
-		spin_unlock(&__sched_lib_name_lock);
-	}
-
-	return ret;
-}
-
 bool is_sched_lib_based_app(pid_t pid)
 {
 	const char *name = NULL;
+	char *libname, *lib_list;
 	struct vm_area_struct *vma;
 	char path_buf[LIB_PATH_LENGTH];
+	char *tmp_lib_name;
 	bool found = false;
 	struct task_struct *p;
 	struct mm_struct *mm;
-	struct libname_node *pos;
 
 	if (strnlen(sched_lib_name, LIB_PATH_LENGTH) == 0)
+		return false;
+
+	tmp_lib_name = kmalloc(LIB_PATH_LENGTH, GFP_KERNEL);
+	if (!tmp_lib_name)
 		return false;
 
 	rcu_read_lock();
@@ -5036,23 +5083,13 @@ bool is_sched_lib_based_app(pid_t pid)
 	p = find_process_by_pid(pid);
 	if (!p) {
 		rcu_read_unlock();
+		kfree(tmp_lib_name);
 		return false;
 	}
 
 	/* Prevent p going away */
 	get_task_struct(p);
 	rcu_read_unlock();
-
-	spin_lock(&__sched_lib_name_lock);
-	/* Check if the task name equals any of the sched_lib_name list. */
-	list_for_each_entry (pos, &__sched_lib_name_list, list) {
-		if (!strncmp(p->comm, pos->name, LIB_PATH_LENGTH)) {
-			found = true;
-			spin_unlock(&__sched_lib_name_lock);
-			goto put_task_struct;
-		}
-	}
-	spin_unlock(&__sched_lib_name_lock);
 
 	mm = get_task_mm(p);
 	if (!mm)
@@ -5066,18 +5103,16 @@ bool is_sched_lib_based_app(pid_t pid)
 			if (IS_ERR(name))
 				goto release_sem;
 
-			/* Check if the file name includes any of the
-			 * sched_lib_name list. */
-			spin_lock(&__sched_lib_name_lock);
-			list_for_each_entry (pos, &__sched_lib_name_list,
-					     list) {
-				if (strnstr(name, pos->name,
-					    strnlen(name, LIB_PATH_LENGTH))) {
+			strlcpy(tmp_lib_name, sched_lib_name, LIB_PATH_LENGTH);
+			lib_list = tmp_lib_name;
+			while ((libname = strsep(&lib_list, ","))) {
+				libname = skip_spaces(libname);
+				if (strnstr(name, libname,
+					strnlen(name, LIB_PATH_LENGTH))) {
 					found = true;
-					break;
+					goto release_sem;
 				}
 			}
-			spin_unlock(&__sched_lib_name_lock);
 		}
 	}
 
@@ -5086,6 +5121,7 @@ release_sem:
 	mmput(mm);
 put_task_struct:
 	put_task_struct(p);
+	kfree(tmp_lib_name);
 	return found;
 }
 
@@ -6384,6 +6420,7 @@ int sched_cpu_starting(unsigned int cpu)
 {
 	set_cpu_rq_start_time(cpu);
 	sched_rq_cpu_starting(cpu);
+	clear_walt_request(cpu);
 	return 0;
 }
 
@@ -7619,6 +7656,26 @@ const u32 sched_prio_to_wmult[40] = {
  /*  10 */  39045157,  49367440,  61356676,  76695844,  95443717,
  /*  15 */ 119304647, 148102320, 186737708, 238609294, 286331153,
 };
+
+/*
+ *@boost:should be 0,1,2.
+ *@period:boost time based on ms units.
+ */
+int set_task_boost(int boost, u64 period)
+{
+	if (boost < 0 || boost > 2)
+		return -EINVAL;
+	if (boost) {
+		current->boost = boost;
+		current->boost_period = (u64)period * 1000 * 1000;
+		current->boost_expires = sched_clock() + current->boost_period;
+	} else {
+		current->boost = 0;
+		current->boost_expires = 0;
+		current->boost_period = 0;
+	}
+	return 0;
+}
 
 #ifdef CONFIG_SCHED_WALT
 /*
