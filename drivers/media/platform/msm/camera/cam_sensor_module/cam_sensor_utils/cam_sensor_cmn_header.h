@@ -132,6 +132,7 @@ enum sensor_sub_module {
 	SUB_MODULE_CSID,
 	SUB_MODULE_CSIPHY,
 	SUB_MODULE_OIS,
+	SUB_MODULE_IR_LED,
 	SUB_MODULE_EXT,
 	SUB_MODULE_MAX,
 };
@@ -313,17 +314,6 @@ struct cam_camera_slave_info {
 	uint16_t sensor_id_reg_addr;
 	uint16_t sensor_id;
 	uint16_t sensor_id_mask;
-	uint8_t  addr_type;
-	uint8_t  data_type;
-};
-
-struct cam_camera_id_info {
-	uint16_t sensor_slave_addr;
-	uint16_t sensor_id_mask;
-	uint32_t sensor_id_reg_addr;
-	uint32_t sensor_id;
-	uint8_t sensor_addr_type;
-	uint8_t sensor_data_type;
 };
 
 struct msm_sensor_init_params {
@@ -364,7 +354,6 @@ struct cam_sensor_power_setting {
 
 struct cam_sensor_board_info {
 	struct cam_camera_slave_info slave_info;
-	struct cam_camera_id_info id_info;
 	int32_t sensor_mount_angle;
 	int32_t secure_mode;
 	int modes_supported;

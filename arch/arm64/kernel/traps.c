@@ -53,9 +53,6 @@
 #include <asm/sysreg.h>
 #include <trace/events/exception.h>
 
-/* Save pt_regs ptr to get panic info for display in xbl mode */
-void *panic_info = NULL;
-
 static const char *handler[]= {
 	"Synchronous Abort",
 	"IRQ",
@@ -198,10 +195,6 @@ static int __die(const char *str, int err, struct pt_regs *regs)
 	struct task_struct *tsk = current;
 	static int die_counter;
 	int ret;
-
-	/* Save regs to display in xbl mode */
-	if (!panic_info)
-		panic_info = (void *)regs;
 
 	pr_emerg("Internal error: %s: %x [#%d]" S_PREEMPT S_SMP "\n",
 		 str, err, ++die_counter);
@@ -873,9 +866,8 @@ static int bug_handler(struct pt_regs *regs, unsigned int esr)
 }
 
 static struct break_hook bug_break_hook = {
-	.esr_val = 0xf2000000 | BUG_BRK_IMM,
-	.esr_mask = 0xffffffff,
 	.fn = bug_handler,
+	.imm = BUG_BRK_IMM,
 };
 
 #ifdef CONFIG_KASAN_SW_TAGS
@@ -944,11 +936,48 @@ int __init early_brk64(unsigned long addr, unsigned int esr,
 	return bug_handler(regs, esr) != DBG_HOOK_HANDLED;
 }
 
+static int refcount_overflow_handler(struct pt_regs *regs, unsigned int esr)
+{
+	u32 dummy_cbz = le32_to_cpup((__le32 *)(regs->pc + 4));
+	bool zero = regs->pstate & PSR_Z_BIT;
+	u32 rt;
+
+	/*
+	 * Find the register that holds the counter address from the
+	 * dummy 'cbz' instruction that follows the 'brk' instruction
+	 * that sent us here.
+	 */
+	rt = aarch64_insn_decode_register(AARCH64_INSN_REGTYPE_RT, dummy_cbz);
+
+	/* First unconditionally saturate the refcount. */
+	*(int *)regs->regs[rt] = INT_MIN / 2;
+
+	/*
+	 * This function has been called because either a negative refcount
+	 * value was seen by any of the refcount functions, or a zero
+	 * refcount value was seen by refcount_{add,dec}().
+	 */
+
+	/* point pc to the branch instruction that detected the overflow */
+	regs->pc += 4 + aarch64_get_branch_offset(dummy_cbz);
+	refcount_error_report(regs, zero ? "hit zero" : "overflow");
+
+	/* advance pc and proceed */
+	regs->pc += 4;
+	return DBG_HOOK_HANDLED;
+}
+
+static struct break_hook refcount_break_hook = {
+	.fn	= refcount_overflow_handler,
+	.imm	= REFCOUNT_BRK_IMM,
+};
+
 /* This registration must happen early, before debug_traps_init(). */
 void __init trap_init(void)
 {
-	register_break_hook(&bug_break_hook);
+	register_kernel_break_hook(&bug_break_hook);
+	register_kernel_break_hook(&refcount_break_hook);
 #ifdef CONFIG_KASAN_SW_TAGS
-	register_break_hook(&kasan_break_hook);
+	register_kernel_break_hook(&kasan_break_hook);
 #endif
 }

@@ -2930,17 +2930,6 @@ void sde_plane_clear_multirect(const struct drm_plane_state *drm_state)
 	pstate->multirect_index = SDE_SSPP_RECT_SOLO;
 	pstate->multirect_mode = SDE_SSPP_MULTIRECT_NONE;
 }
-int sde_plane_check_fingerprint_layer(const struct drm_plane_state *drm_state)
-{
-	struct sde_plane_state *pstate;
-
-	if (!drm_state)
-		return 0;
-
-	pstate = to_sde_plane_state(drm_state);
-
-	return sde_plane_get_property(pstate, PLANE_PROP_CUSTOM);
-}
 
 /**
  * multi_rect validate API allows to validate only R0 and R1 RECT
@@ -3900,6 +3889,7 @@ static int sde_plane_sspp_atomic_update(struct drm_plane *plane,
 	struct drm_crtc *crtc;
 	struct drm_framebuffer *fb;
 	struct sde_rect src, dst;
+	bool is_rt;
 	bool q16_data = true;
 	int idx;
 
@@ -3987,7 +3977,6 @@ static int sde_plane_sspp_atomic_update(struct drm_plane *plane,
 		case PLANE_PROP_ALPHA:
 		case PLANE_PROP_INPUT_FENCE:
 		case PLANE_PROP_BLEND_OP:
-		case PLANE_PROP_CUSTOM:
 			/* no special action required */
 			break;
 		case PLANE_PROP_FB_TRANSLATION_MODE:
@@ -4044,12 +4033,17 @@ static int sde_plane_sspp_atomic_update(struct drm_plane *plane,
 
 	_sde_plane_set_scanout(plane, pstate, &psde->pipe_cfg, fb);
 
+	is_rt = sde_crtc_get_client_type(crtc) != NRT_CLIENT;
+	if (is_rt != psde->is_rt_pipe) {
+		psde->is_rt_pipe = is_rt;
+		pstate->dirty |= SDE_PLANE_DIRTY_QOS;
+	}
+
 	/* early out if nothing dirty */
 	if (!pstate->dirty)
 		return 0;
 	pstate->pending = true;
 
-	psde->is_rt_pipe = (sde_crtc_get_client_type(crtc) != NRT_CLIENT);
 	_sde_plane_set_qos_ctrl(plane, false, SDE_PLANE_QOS_PANIC_CTRL);
 
 	/* update secure session flag */
@@ -4258,8 +4252,11 @@ static int sde_plane_sspp_atomic_update(struct drm_plane *plane,
 				&psde->sharp_cfg);
 	}
 
-	_sde_plane_set_qos_lut(plane, fb);
-	_sde_plane_set_danger_lut(plane, fb);
+	if (pstate->dirty & (SDE_PLANE_DIRTY_QOS | SDE_PLANE_DIRTY_RECTS |
+			     SDE_PLANE_DIRTY_FORMAT)) {
+		_sde_plane_set_qos_lut(plane, fb);
+		_sde_plane_set_danger_lut(plane, fb);
+	}
 
 	if (plane->type != DRM_PLANE_TYPE_CURSOR) {
 		_sde_plane_set_qos_ctrl(plane, true, SDE_PLANE_QOS_PANIC_CTRL);
@@ -4268,7 +4265,8 @@ static int sde_plane_sspp_atomic_update(struct drm_plane *plane,
 			_sde_plane_set_ts_prefill(plane, pstate);
 	}
 
-	_sde_plane_set_qos_remap(plane);
+	if (pstate->dirty & SDE_PLANE_DIRTY_QOS)
+		_sde_plane_set_qos_remap(plane);
 
 	/* clear dirty */
 	pstate->dirty = 0x0;
@@ -4430,8 +4428,6 @@ static void _sde_plane_install_properties(struct drm_plane *plane,
 	msm_property_install_range(&psde->property_info, "zpos",
 		0x0, 0, zpos_max, zpos_def, PLANE_PROP_ZPOS);
 
-	msm_property_install_range(&psde->property_info, "PLANE_CUST",
-			0x0, 0, INT_MAX, 0, PLANE_PROP_CUSTOM);
 	msm_property_install_range(&psde->property_info, "alpha",
 		0x0, 0, 255, 255, PLANE_PROP_ALPHA);
 

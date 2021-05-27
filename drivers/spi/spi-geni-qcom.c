@@ -29,7 +29,7 @@
 #include <soc/qcom/boot_stats.h>
 
 #define SPI_NUM_CHIPSELECT	(4)
-#define SPI_XFER_TIMEOUT_MS	(250)
+#define SPI_XFER_TIMEOUT_MS	(1000)
 #define SPI_AUTO_SUSPEND_DELAY	(250)
 /* SPI SE specific registers */
 #define SE_SPI_CPHA		(0x224)
@@ -188,6 +188,18 @@ struct spi_geni_master {
 	bool set_miso_sampling;
 	u32 miso_sampling_ctrl_val;
 };
+
+/******************************************************************************
+ * *This functionis for get spi_geni_master->dev
+ * *spi_master: struct spi_device ->master
+ * *return: spi_geni_master->dev
+ ******************************************************************************/
+struct device *lct_get_spi_geni_master_dev(struct spi_master *spi)
+{
+	struct spi_geni_master *geni_mas = spi_master_get_devdata(spi);
+	return geni_mas->dev;
+}
+EXPORT_SYMBOL(lct_get_spi_geni_master_dev);
 
 static void spi_slv_setup(struct spi_geni_master *mas);
 static void ssr_spi_force_suspend(struct device *dev);
@@ -1737,8 +1749,6 @@ static int spi_geni_probe(struct platform_device *pdev)
 		ret = PTR_ERR(rsc->geni_gpio_sleep);
 		goto spi_geni_probe_err;
 	}
-
-	pinctrl_select_state(rsc->geni_pinctrl, rsc->geni_gpio_sleep);
 
 	geni_mas->disable_dma_mode = of_property_read_bool(pdev->dev.of_node,
 			"qcom,disable-dma");

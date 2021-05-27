@@ -42,8 +42,6 @@
 #include <linux/cn_proc.h>
 #include <linux/compiler.h>
 #include <linux/posix-timers.h>
-#include <linux/oom.h>
-#include <linux/capability.h>
 
 #define CREATE_TRACE_POINTS
 #include <trace/events/signal.h>
@@ -1218,18 +1216,6 @@ int do_send_sig_info(int sig, struct siginfo *info, struct task_struct *p,
 	unsigned long flags;
 	int ret = -ESRCH;
 
-	if(sig == SIGKILL) {
-		if(p && p->flags & PF_FROZEN) {
-			struct task_struct *child = p;
-			rcu_read_lock();
-			do {
-				child = next_thread(child);
-				child->kill_flag = 1;
-				__thaw_task(child);
-			} while(child !=p);
-			rcu_read_unlock();
-		}
-	}
 	if (lock_task_sighand(p, &flags)) {
 		ret = send_signal(sig, info, p, group);
 		unlock_task_sighand(p, &flags);
@@ -1356,11 +1342,8 @@ int group_send_sig_info(int sig, struct siginfo *info, struct task_struct *p)
 	ret = check_kill_permission(sig, info, p);
 	rcu_read_unlock();
 
-	if (!ret && sig) {
+	if (!ret && sig)
 		ret = do_send_sig_info(sig, info, p, true);
-		if (capable(CAP_KILL) && sig == SIGKILL)
-			add_to_oom_reaper(p);
-	}
 
 	return ret;
 }
@@ -3081,15 +3064,8 @@ static inline void prepare_kill_siginfo(int sig, struct siginfo *info)
 SYSCALL_DEFINE2(kill, pid_t, pid, int, sig)
 {
 	struct siginfo info;
-	struct task_struct *p;
 
 	prepare_kill_siginfo(sig, &info);
-
-	if (sig == SIGQUIT || sig == SIGSEGV ||  sig == SIGABRT) {
-		p = pid_task(find_vpid(pid), PIDTYPE_PID);
-		if (p)
-			unfreezer_fork(p);
-	}
 
 	return kill_something_info(sig, &info, pid);
 }

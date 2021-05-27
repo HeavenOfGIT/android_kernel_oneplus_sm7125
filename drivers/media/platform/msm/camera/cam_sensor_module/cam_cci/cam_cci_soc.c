@@ -45,10 +45,9 @@ int cam_cci_init(struct v4l2_subdev *sd,
 
 	CAM_DBG(CAM_CCI, "Base address %pK", base);
 
-#if 0
 	if (cci_dev->ref_count++) {
-		CAM_INFO(CAM_CCI, "ref_count %d, dev=%s", cci_dev->ref_count, cci_dev->device_name);
-		CAM_INFO(CAM_CCI, "master %d", master);
+		CAM_DBG(CAM_CCI, "ref_count %d", cci_dev->ref_count);
+		CAM_DBG(CAM_CCI, "master %d", master);
 		if (master < MASTER_MAX && master >= 0) {
 			mutex_lock(&cci_dev->cci_master_info[master].mutex);
 			flush_workqueue(cci_dev->write_wq[master]);
@@ -79,18 +78,11 @@ int cam_cci_init(struct v4l2_subdev *sd,
 		}
 		return 0;
 	}
-#endif
 
-	if ((cci_dev->ref_count) &&
-		(cci_dev->cci_state == CCI_STATE_ENABLED)) {
-		cci_dev->ref_count++;
-		return 0;
-	}
-
-	cci_dev->ref_count++;
 	ahb_vote.type = CAM_VOTE_ABSOLUTE;
 	ahb_vote.vote.level = CAM_SVS_VOTE;
 	axi_vote.compressed_bw = CAM_CPAS_DEFAULT_AXI_BW;
+	axi_vote.compressed_bw_ab = CAM_CPAS_DEFAULT_AXI_BW;
 	axi_vote.uncompressed_bw = CAM_CPAS_DEFAULT_AXI_BW;
 
 	rc = cam_cpas_start(cci_dev->cpas_handle,
@@ -181,8 +173,6 @@ int cam_cci_init(struct v4l2_subdev *sd,
 
 	cci_dev->cci_state = CCI_STATE_ENABLED;
 
-	CAM_INFO(CAM_CCI, "End init ref_count %d dev=%s", cci_dev->ref_count,cci_dev->device_name);
-
 	return 0;
 
 reset_complete_failed:
@@ -209,10 +199,10 @@ static void cam_cci_init_cci_params(struct cci_device *new_cci_dev)
 
 	for (i = 0; i < NUM_MASTERS; i++) {
 		new_cci_dev->cci_master_info[i].status = 0;
-		new_cci_dev->cci_master_info[i].is_first_req = true;
+		new_cci_dev->cci_master_info[i].freq_ref_cnt = 0;
 		mutex_init(&new_cci_dev->cci_master_info[i].mutex);
 		sema_init(&new_cci_dev->cci_master_info[i].master_sem, 1);
-		spin_lock_init(&new_cci_dev->cci_master_info[i].freq_cnt);
+		spin_lock_init(&new_cci_dev->cci_master_info[i].freq_cnt_lock);
 		init_completion(
 			&new_cci_dev->cci_master_info[i].reset_complete);
 		init_completion(
@@ -400,10 +390,9 @@ int cam_cci_soc_release(struct cci_device *cci_dev)
 		return -EINVAL;
 	}
 	if (--cci_dev->ref_count) {
-		CAM_INFO(CAM_CCI, "ref_count Exit %d dev=%s", cci_dev->ref_count,cci_dev->device_name);
+		CAM_DBG(CAM_CCI, "ref_count Exit %d", cci_dev->ref_count);
 		return 0;
 	}
-
 	for (i = 0; i < MASTER_MAX; i++)
 		if (cci_dev->write_wq[i])
 			flush_workqueue(cci_dev->write_wq[i]);
@@ -421,8 +410,9 @@ int cam_cci_soc_release(struct cci_device *cci_dev)
 	cci_dev->cci_state = CCI_STATE_DISABLED;
 	cci_dev->cycles_per_us = 0;
 
-	cam_cpas_stop(cci_dev->cpas_handle);
-	CAM_INFO(CAM_CCI, "End release ref_count %d dev=%s", cci_dev->ref_count,cci_dev->device_name);
+	rc = cam_cpas_stop(cci_dev->cpas_handle);
+	if (rc)
+		CAM_ERR(CAM_CCI, "cpas stop failed %d", rc);
 
 	return rc;
 }

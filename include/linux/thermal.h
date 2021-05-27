@@ -257,6 +257,16 @@ struct thermal_zone_device {
 	enum thermal_notify_event notify_event;
 };
 
+#ifdef CONFIG_THERMAL_SWITCH
+struct thermal_message_device {
+	struct device device;
+	int sconfig;
+	int temp_state;
+};
+int thermal_message_device_register(void);
+void thermal_message_device_unregister(void);
+#endif //CONFIG_THERMAL_SWITCH
+
 /**
  * struct thermal_governor - structure that holds thermal governor information
  * @name:	name of the governor
@@ -541,6 +551,7 @@ thermal_of_cooling_device_register(struct device_node *np, char *, void *,
 				   const struct thermal_cooling_device_ops *);
 void thermal_cooling_device_unregister(struct thermal_cooling_device *);
 struct thermal_zone_device *thermal_zone_get_zone_by_name(const char *name);
+struct thermal_cooling_device *thermal_zone_get_cdev_by_name(const char *name);
 int thermal_zone_get_temp(struct thermal_zone_device *tz, int *temp);
 int thermal_zone_get_slope(struct thermal_zone_device *tz);
 int thermal_zone_get_offset(struct thermal_zone_device *tz);
@@ -603,6 +614,9 @@ static inline void thermal_cooling_device_unregister(
 	struct thermal_cooling_device *cdev)
 { }
 static inline struct thermal_zone_device *thermal_zone_get_zone_by_name(
+		const char *name)
+{ return ERR_PTR(-ENODEV); }
+static inline struct thermal_cooling_device *thermal_zone_get_cdev_by_name(
 		const char *name)
 { return ERR_PTR(-ENODEV); }
 static inline int thermal_zone_get_temp(

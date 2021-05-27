@@ -370,6 +370,7 @@ struct cam_sensor_acquire_dev {
 	uint32_t    handle_type;
 	uint32_t    reserved;
 	uint64_t    info_handle;
+	uint32_t    operation_mode;//xulei16 add for face unlock
 } __attribute__((packed));
 
 /**
@@ -475,18 +476,6 @@ struct cam_flash_query_cap_info {
 	uint32_t    max_current_flash[CAM_FLASH_MAX_LED_TRIGGERS];
 	uint32_t    max_duration_flash[CAM_FLASH_MAX_LED_TRIGGERS];
 	uint32_t    max_current_torch[CAM_FLASH_MAX_LED_TRIGGERS];
-} __attribute__ ((packed));
-
-#define FD_DFCT_MAX_NUM 5
-#define SG_DFCT_MAX_NUM 299
-
-struct sony_dfct_tbl_t {
-	//---- single static defect ----
-	int sg_dfct_num;		// the number of single static defect
-	int sg_dfct_addr[SG_DFCT_MAX_NUM];		// [ u25 ( upper-u13 = x-addr, lower-u12 = y-addr ) ]
-	//---- FD static defect ----
-	int fd_dfct_num;		// the number of FD static defect
-	int fd_dfct_addr[FD_DFCT_MAX_NUM];		// [ u25 ( upper-u13 = x-addr, lower-u12 = y-addr ) ]
 } __attribute__ ((packed));
 
 /**

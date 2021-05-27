@@ -146,9 +146,8 @@ struct cam_cci_master_info {
 	struct completion report_q[NUM_QUEUES];
 	atomic_t done_pending[NUM_QUEUES];
 	spinlock_t lock_q[NUM_QUEUES];
-	spinlock_t freq_cnt;
 	struct semaphore master_sem;
-	bool is_first_req;
+	spinlock_t freq_cnt_lock;
 	uint16_t freq_ref_cnt;
 };
 
@@ -317,6 +316,6 @@ static inline struct v4l2_subdev *cam_cci_get_subdev(int cci_dev_index)
 #endif
 
 #define VIDIOC_MSM_CCI_CFG \
-	_IOWR('V', BASE_VIDIOC_PRIVATE + 23, struct cam_cci_ctrl *)
+	_IOWR('V', BASE_VIDIOC_PRIVATE + 23, struct cam_cci_ctrl)
 
 #endif /* _CAM_CCI_DEV_H_ */

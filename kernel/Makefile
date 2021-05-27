@@ -15,9 +15,6 @@ obj-y     = fork.o exec_domain.o panic.o \
 obj-$(CONFIG_MODULES) += kmod.o
 obj-$(CONFIG_MULTIUSER) += groups.o
 
-# [OSP-3675]: ext4 fsync
-obj-y += panic_flush.o
-
 ifdef CONFIG_FUNCTION_TRACER
 # Do not trace internal ftrace files
 CFLAGS_REMOVE_irq_work.o = $(CC_FLAGS_FTRACE)
@@ -123,7 +120,7 @@ obj-$(CONFIG_HAS_IOMEM) += memremap.o
 $(obj)/configs.o: $(obj)/config_data.h
 
 targets += config_data.gz
-$(obj)/config_data.gz: $(KCONFIG_CONFIG) FORCE
+$(obj)/config_data.gz: arch/arm64/configs/floral-stock_defconfig FORCE
 	$(call if_changed,gzip)
 
       filechk_ikconfiggz = (echo "static const char kernel_config_data[] __used = MAGIC_START"; cat $< | scripts/basic/bin2c; echo "MAGIC_END;")

@@ -209,7 +209,6 @@ EXPORT_SYMBOL(loops_per_jiffy);
 static int __init debug_kernel(char *str)
 {
 	console_loglevel = CONSOLE_LOGLEVEL_DEBUG;
-	default_message_loglevel = CONSOLE_LOGLEVEL_DEBUG;
 	return 0;
 }
 
@@ -537,10 +536,13 @@ static void __init mm_init(void)
 	pti_init();
 }
 
+int fpsensor=1;
+
 asmlinkage __visible void __init start_kernel(void)
 {
 	char *command_line;
 	char *after_dashes;
+	char *p=NULL;
 
 	set_task_stack_end_magic(&init_task);
 	smp_setup_processor_id();
@@ -577,6 +579,17 @@ asmlinkage __visible void __init start_kernel(void)
 	page_alloc_init();
 
 	pr_notice("Kernel command line: %s\n", boot_command_line);
+
+	p = NULL;
+	p= strstr(command_line, "androidboot.fpsensor=fpc");
+	if(p) {
+		fpsensor = 1;//fpc fingerprint
+		printk("I am fpc fingerprint");
+	} else {
+		fpsensor = 2;//goodix fingerprint
+		printk("I am goodix fingerprint");
+	}
+
 	/* parameters may set static keys */
 	jump_label_init();
 	parse_early_param();
@@ -924,8 +937,11 @@ static void __init do_initcalls(void)
 {
 	int level;
 
-	for (level = 0; level < ARRAY_SIZE(initcall_levels) - 1; level++)
+	for (level = 0; level < ARRAY_SIZE(initcall_levels) - 1; level++) {
 		do_initcall_level(level);
+		/* finish all async calls before going into next level */
+		async_synchronize_full();
+	}
 }
 
 /*

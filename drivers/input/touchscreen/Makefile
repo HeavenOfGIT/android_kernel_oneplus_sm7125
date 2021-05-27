@@ -5,6 +5,9 @@
 
 # Each configuration option enables a list of files.
 
+obj-$(CONFIG_TOUCHSCREEN_FTS)                   += ft8756_spi/
+obj-$(CONFIG_TOUCHSCREEN_NT36xxx_HOSTDL_SPI)    += nt36xxx_spi/
+
 wm97xx-ts-y := wm97xx-core.o
 
 obj-$(CONFIG_TOUCHSCREEN_PROPERTIES)	+= of_touchscreen.o
@@ -73,7 +76,7 @@ obj-$(CONFIG_TOUCHSCREEN_STMPE)		+= stmpe-ts.o
 obj-$(CONFIG_TOUCHSCREEN_SUN4I)		+= sun4i-ts.o
 obj-$(CONFIG_TOUCHSCREEN_SUR40)		+= sur40.o
 obj-$(CONFIG_TOUCHSCREEN_SURFACE3_SPI)	+= surface3_spi.o
-#obj-$(CONFIG_TOUCHSCREEN_SYNAPTICS_DSX) += synaptics_dsx/
+obj-$(CONFIG_TOUCHSCREEN_SYNAPTICS_DSX) += synaptics_dsx/
 obj-$(CONFIG_TOUCHSCREEN_TI_AM335X_TSC)	+= ti_am335x_tsc.o
 obj-$(CONFIG_TOUCHSCREEN_TOUCHIT213)	+= touchit213.o
 obj-$(CONFIG_TOUCHSCREEN_TOUCHRIGHT)	+= touchright.o

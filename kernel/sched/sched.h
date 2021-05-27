@@ -47,24 +47,12 @@
 # define SCHED_WARN_ON(x)	({ (void)(x), 0; })
 #endif
 
-#ifdef CONFIG_ONEPLUS_HEALTHINFO
-#include <linux/oem/oneplus_healthinfo.h>
-#endif
-
 struct rq;
 struct cpuidle_state;
 
 extern __read_mostly bool sched_predl;
 extern unsigned int sched_capacity_margin_up[NR_CPUS];
 extern unsigned int sched_capacity_margin_down[NR_CPUS];
-
-#ifdef CONFIG_IM
-extern int group_show(struct seq_file *m, void *v);
-extern void group_remove(void);
-#else
-static inline int group_show(struct seq_file *m, void *v) {return 0};
-static inline void group_remove(void) {};
-#endif
 
 #ifdef CONFIG_SCHED_WALT
 extern unsigned int sched_ravg_window;
@@ -123,9 +111,6 @@ struct sched_cluster {
 	bool wake_up_idle;
 	u64 aggr_grp_load;
 	u64 coloc_boost_load;
-#ifdef CONFIG_ONEPLUS_HEALTHINFO
-	struct sched_stat_para *overload;
-#endif
 };
 
 extern unsigned int sched_disable_window_stats;
@@ -151,6 +136,8 @@ extern void init_sched_groups_capacity(int cpu, struct sched_domain *sd);
 #else
 static inline void cpu_load_update_active(struct rq *this_rq) { }
 #endif
+
+extern bool energy_aware(void);
 
 /*
  * Helpers for converting nanosecond timing to jiffy resolution
@@ -965,13 +952,6 @@ struct rq {
 
 #ifdef CONFIG_SMP
 	struct llist_head wake_list;
-#endif
-
-#ifdef CONFIG_ONEPLUS_HEALTHINFO
-	unsigned int ux_nr_running;
-	u64 cfs_ol_start;
-	u64 ux_ol_start;
-	u64 irqsoff_start_time;
 #endif
 
 #ifdef CONFIG_CPU_IDLE
@@ -1898,11 +1878,6 @@ static inline void add_nr_running(struct rq *rq, unsigned count)
 	sched_update_nr_prod(cpu_of(rq), count, true);
 	rq->nr_running = prev_nr + count;
 
-#ifdef CONFIG_ONEPLUS_HEALTHINFO
-	if (prev_nr <= 5 && rq->nr_running > 5)
-		rq->cfs_ol_start = rq_clock(rq);
-#endif
-
 	if (prev_nr < 2 && rq->nr_running >= 2) {
 #ifdef CONFIG_SMP
 		if (!READ_ONCE(rq->rd->overload))
@@ -1915,19 +1890,8 @@ static inline void add_nr_running(struct rq *rq, unsigned count)
 
 static inline void sub_nr_running(struct rq *rq, unsigned count)
 {
-#ifdef CONFIG_ONEPLUS_HEALTHINFO
-	u64 delta;
-	unsigned int prev_nr = rq->nr_running;
-#endif
 	sched_update_nr_prod(cpu_of(rq), count, false);
 	rq->nr_running -= count;
-#ifdef CONFIG_ONEPLUS_HEALTHINFO
-	if (prev_nr > 5 && rq->nr_running <= 5) {
-		delta = rq_clock(rq) - rq->cfs_ol_start;
-		rq->cfs_ol_start = 0;
-		ohm_overload_record(rq, (delta >> 20));
-	}
-#endif
 	/* Check if we still need preemption */
 	sched_update_tick_dependency(rq);
 }
@@ -2081,7 +2045,12 @@ static inline unsigned long task_util(struct task_struct *p)
  *
  * Return: the (estimated) utilization for the specified CPU
  */
+
+#ifdef CONFIG_SCHED_WALT
 static inline unsigned long cpu_util(int cpu)
+#else
+static inline unsigned long __cpu_util(int cpu)
+#endif
 {
 	struct cfs_rq *cfs_rq;
 	unsigned int util;
@@ -2163,6 +2132,7 @@ cpu_util_freq_walt(int cpu, struct sched_walt_cpu_load *walt_load)
 
 		nl = div64_u64(nl * (100 + boost),
 		walt_cpu_util_freq_divisor);
+		pl = div64_u64(pl * (100 + boost), 100);
 
 		walt_load->prev_window_util = util;
 		walt_load->nl = nl;
@@ -2188,11 +2158,17 @@ static inline unsigned long cpu_util_rt(int cpu)
 	return rt_rq->avg.util_avg;
 }
 
+static inline unsigned long cpu_util(int cpu)
+{
+	return min(__cpu_util(cpu) + cpu_util_rt(cpu), capacity_orig_of(cpu));
+}
+
 static inline unsigned long
 cpu_util_freq(int cpu, struct sched_walt_cpu_load *walt_load)
 {
-	return min(cpu_util(cpu) + cpu_util_rt(cpu), capacity_orig_of(cpu));
+	return min(cpu_util(cpu), capacity_orig_of(cpu));
 }
+
 
 #define sched_ravg_window TICK_NSEC
 #define sysctl_sched_use_walt_cpu_util 0
@@ -2587,6 +2563,11 @@ enum sched_boost_policy {
 	SCHED_BOOST_ON_BIG,
 	SCHED_BOOST_ON_ALL,
 };
+
+#define NO_BOOST 0
+#define FULL_THROTTLE_BOOST 1
+#define CONSERVATIVE_BOOST 2
+#define RESTRAINED_BOOST 3
 
 /*
  * Returns the rq capacity of any rq in a group. This does not play
@@ -3064,29 +3045,22 @@ task_in_cum_window_demand(struct rq *rq, struct task_struct *p)
 }
 
 static inline bool hmp_capable(void) { return false; }
-static inline bool is_max_capacity_cpu(int cpu) { return true; }
-static inline bool is_min_capacity_cpu(int cpu) { return true; }
-
-static inline int
-preferred_cluster(struct sched_cluster *cluster, struct task_struct *p)
+static inline bool is_min_capacity_cpu(int cpu)
 {
-	return 1;
-}
+#ifdef CONFIG_SMP
+	int min_cpu = cpu_rq(cpu)->rd->min_cap_orig_cpu;
 
-static inline struct sched_cluster *rq_cluster(struct rq *rq)
-{
-	return NULL;
-}
-
-static inline u64 scale_load_to_cpu(u64 load, int cpu)
-{
-	return load;
+	return unlikely(min_cpu == -1) ||
+		capacity_orig_of(cpu) == capacity_orig_of(min_cpu);
+#else
+	return true;
+#endif
 }
 
 #ifdef CONFIG_SMP
 static inline int cpu_capacity(int cpu)
 {
-	return SCHED_CAPACITY_SCALE;
+	return capacity_orig_of(cpu);
 }
 #endif
 
@@ -3114,11 +3088,6 @@ static inline int update_preferred_cluster(struct related_thread_group *grp,
 
 static inline void add_new_task_to_grp(struct task_struct *new) {}
 
-static inline int same_freq_domain(int src_cpu, int dst_cpu)
-{
-	return 1;
-}
-
 static inline void clear_reserved(int cpu) { }
 static inline int alloc_related_thread_groups(void) { return 0; }
 
@@ -3135,7 +3104,7 @@ static inline void update_cpu_cluster_capacity(const cpumask_t *cpus) { }
 #ifdef CONFIG_SMP
 static inline unsigned long thermal_cap(int cpu)
 {
-	return cpu_rq(cpu)->cpu_capacity_orig;
+	return SCHED_CAPACITY_SCALE;
 }
 #endif
 
@@ -3160,22 +3129,10 @@ static inline bool early_detection_notify(struct rq *rq, u64 wallclock)
 	return 0;
 }
 
-#ifdef CONFIG_SMP
-static inline unsigned int power_cost(int cpu, u64 demand)
-{
-	return SCHED_CAPACITY_SCALE;
-}
-#endif
-
 static inline void note_task_waking(struct task_struct *p, u64 wallclock) { }
 static inline void walt_map_freq_to_load(void) { }
 static inline void walt_update_min_max_capacity(void) { }
 #endif	/* CONFIG_SCHED_WALT */
-
-static inline bool energy_aware(void)
-{
-	return sched_feat(ENERGY_AWARE);
-}
 
 struct sched_avg_stats {
 	int nr;

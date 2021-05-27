@@ -183,7 +183,6 @@
 			qcom,thermal-mitigation
 					= <3000000 1500000 1000000 500000>;
 
-			qcom,chg-term-src = <1>;
 			qcom,charger-temp-max = <800>;
 			qcom,smb-temp-max = <800>;
 
@@ -730,7 +729,7 @@
 	};
 
 	soc {
-		polling-delay-passive = <1000>;
+		polling-delay-passive = <100>;
 		polling-delay = <0>;
 		thermal-governor = "low_limits_cap";
 		thermal-sensors = <&bcl_soc>;
@@ -739,12 +738,7 @@
 
 		trips {
 			soc_trip:soc-trip {
-				temperature = <5>;
-				hysteresis = <0>;
-				type = "passive";
-			};
-			soc_trip2:soc-trip2 {
-				temperature = <15>;
+				temperature = <10>;
 				hysteresis = <0>;
 				type = "passive";
 			};

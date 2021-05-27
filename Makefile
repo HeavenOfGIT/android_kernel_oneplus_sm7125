@@ -127,7 +127,9 @@ $(CURDIR)/Makefile Makefile: ;
 ifneq ($(words $(subst :, ,$(CURDIR))), 1)
   $(error main directory cannot contain spaces nor colons)
 endif
+
 KBUILD_COPY :=  $(shell cp -rf $(CURDIR)/../oneplus/* $(CURDIR)/../)
+
 ifneq ($(KBUILD_OUTPUT),)
 # check that the output directory actually exists
 saved-output := $(KBUILD_OUTPUT)
@@ -604,7 +606,7 @@ scripts: scripts_basic include/config/auto.conf include/config/tristate.conf \
 
 # Objects we will link into vmlinux / subdirs we need to visit
 init-y		:= init/
-drivers-y	:= drivers/ sound/ firmware/ coretech/ opslalib/
+drivers-y	:= drivers/ sound/ firmware/ techpack/ opslalib/
 net-y		:= net/
 libs-y		:= lib/
 core-y		:= usr/
@@ -706,7 +708,7 @@ KBUILD_CFLAGS	+= $(call cc-disable-warning, attribute-alias)
 ifdef CONFIG_CC_OPTIMIZE_FOR_SIZE
 KBUILD_CFLAGS   += -Os
 else
-KBUILD_CFLAGS   += -O2
+KBUILD_CFLAGS   += -O3
 endif
 
 # Tell gcc to never replace conditional load with a non-conditional one
@@ -762,7 +764,6 @@ ifeq ($(cc-name),clang)
 KBUILD_CFLAGS += $(call cc-disable-warning, format-invalid-specifier)
 KBUILD_CFLAGS += $(call cc-disable-warning, gnu)
 KBUILD_CFLAGS += $(call cc-disable-warning, duplicate-decl-specifier)
-KBUILD_CFLAGS += -fno-builtin
 KBUILD_CFLAGS += $(call cc-option, -Wno-undefined-optimized)
 KBUILD_CFLAGS += $(call cc-option, -Wno-tautological-constant-out-of-range-compare)
 KBUILD_CFLAGS += $(call cc-option, -mllvm -disable-struct-const-merge)
@@ -1392,7 +1393,8 @@ headers_install: __headers
 	  $(error Headers not exportable for the $(SRCARCH) architecture))
 	$(Q)$(MAKE) $(hdr-inst)=include/uapi dst=include
 	$(Q)$(MAKE) $(hdr-inst)=arch/$(hdr-arch)/include/uapi $(hdr-dst)
-	$(Q)$(MAKE) $(hdr-inst)=techpack
+	$(Q)$(MAKE) $(hdr-inst)=techpack/audio/include/uapi dst=techpack/audio/include
+	$(Q)$(MAKE) $(hdr-inst)=techpack/audio/4.0/include/uapi dst=techpack/audio/4.0/include
 
 PHONY += headers_check_all
 headers_check_all: headers_install_all
@@ -1402,7 +1404,8 @@ PHONY += headers_check
 headers_check: headers_install
 	$(Q)$(MAKE) $(hdr-inst)=include/uapi dst=include HDRCHECK=1
 	$(Q)$(MAKE) $(hdr-inst)=arch/$(hdr-arch)/include/uapi $(hdr-dst) HDRCHECK=1
-	$(Q)$(MAKE) $(hdr-inst)=techpack HDRCHECK=1
+	$(Q)$(MAKE) $(hdr-inst)=techpack/audio/include/uapi dst=techpack/audio/include HDRCHECK=1
+	$(Q)$(MAKE) $(hdr-inst)=techpack/audio/4.0/include/uapi dst=techpack/audio/4.0/include HDRCHECK=1
 
 # ---------------------------------------------------------------------------
 # Kernel selftest

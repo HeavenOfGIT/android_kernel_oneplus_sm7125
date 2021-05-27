@@ -25,8 +25,8 @@
 #include <net/netlink.h>
 #include <net/genetlink.h>
 #include <linux/suspend.h>
-
-#include <linux/pm_qos.h>
+#include <linux/kobject.h>
+#include <../base/base.h>
 
 #define CREATE_TRACE_POINTS
 #include <trace/events/thermal.h>
@@ -39,9 +39,6 @@ MODULE_DESCRIPTION("Generic thermal management sysfs support");
 MODULE_LICENSE("GPL v2");
 
 #define THERMAL_MAX_ACTIVE	16
-#define THERMAL_MAX_MASK	(1UL<<8)
-#define THERMAL_TRIP_POINT	(1UL<<7)
-#define THERMAL_TEMP_MASK	0x7F
 
 static DEFINE_IDA(thermal_tz_ida);
 static DEFINE_IDA(thermal_cdev_ida);
@@ -53,15 +50,13 @@ static LIST_HEAD(thermal_governor_list);
 static DEFINE_MUTEX(thermal_list_lock);
 static DEFINE_MUTEX(thermal_governor_lock);
 static DEFINE_MUTEX(poweroff_lock);
+static DEFINE_MUTEX(cdev_softlink_lock);
+static DEFINE_MUTEX(tz_softlink_lock);
 
 static atomic_t in_suspend;
 static bool power_off_triggered;
 
 static struct thermal_governor *def_governor;
-
-static struct thermal_zone_device *msm_tz, *skin_tz;
-static struct thermal_zone_device *xo_mmw1_tz, *modem_mmw2_tz;
-static struct thermal_zone_device *modem_skin_tz, *pa1_mmw0_tz;
 
 static struct workqueue_struct *thermal_passive_wq;
 
@@ -567,6 +562,61 @@ static void thermal_zone_device_check(struct work_struct *work)
 	thermal_zone_device_update(tz, THERMAL_EVENT_UNSPECIFIED);
 }
 
+
+#ifdef CONFIG_THERMAL_SWITCH
+#define to_thermal_msg_device(_dev)	\
+	container_of(_dev, struct thermal_message_device, device)
+
+static ssize_t
+sconfig_show(struct device *dev, struct device_attribute *devattr,
+		       char *buf){
+	struct thermal_message_device *thermal_msg = to_thermal_msg_device(dev);
+
+	return sprintf(buf,"%d\n",thermal_msg->sconfig);
+}
+
+static ssize_t
+sconfig_store(struct device *dev, struct device_attribute *devattr,
+		const char *buf, size_t count){
+	int sconfig;
+	struct thermal_message_device *thermal_msg = to_thermal_msg_device(dev);
+
+	if (kstrtoint(buf,10,&sconfig))
+		return -EINVAL;
+
+	thermal_msg->sconfig = sconfig;
+
+	return count;
+}
+
+static DEVICE_ATTR(sconfig,0644,sconfig_show,sconfig_store);
+
+//Add 3C state node
+static ssize_t
+temp_state_show(struct device *dev, struct device_attribute *devattr,
+		       char *buf){
+	struct thermal_message_device *thermal_msg = to_thermal_msg_device(dev);
+
+	return sprintf(buf,"%d\n",thermal_msg->temp_state);
+}
+
+static ssize_t
+temp_state_store(struct device *dev, struct device_attribute *devattr,
+		const char *buf, size_t count){
+	int temp_state;
+	struct thermal_message_device *thermal_msg = to_thermal_msg_device(dev);
+
+	if (kstrtoint(buf,10,&temp_state))
+		return -EINVAL;
+
+	thermal_msg->temp_state = temp_state;
+
+	return count;
+}
+
+static DEVICE_ATTR(temp_state,0644,temp_state_show,temp_state_store);
+#endif //CONFIG_THERMAL_SWITCH
+
 /*
  * Power actor section: interface to power actors to estimate power
  *
@@ -1046,8 +1096,12 @@ __thermal_cooling_device_register(struct device_node *np,
 	struct thermal_cooling_device *cdev;
 	struct thermal_zone_device *pos = NULL;
 	int result;
+	static struct kobject *cdev_softlink_kobj;
 
 	if (type && strlen(type) >= THERMAL_NAME_LENGTH)
+		return ERR_PTR(-EINVAL);
+
+	if (!strcmp(type, ""))
 		return ERR_PTR(-EINVAL);
 
 	if (!ops || !ops->get_max_state || !ops->get_cur_state ||
@@ -1083,6 +1137,26 @@ __thermal_cooling_device_register(struct device_node *np,
 		kfree(cdev);
 		return ERR_PTR(result);
 	}
+
+	mutex_lock(&cdev_softlink_lock);
+	if (cdev_softlink_kobj == NULL) {
+		cdev_softlink_kobj = kobject_create_and_add("cdev-by-name",
+						cdev->device.kobj.parent);
+		result = sysfs_create_link(&cdev->device.class->p->subsys.kobj,
+							cdev_softlink_kobj,
+							"cdev-by-name");
+		if (result) {
+			dev_err(&cdev->device,
+				"Fail to create cdev_map "
+				"soft link in class\n");
+		}
+	}
+	mutex_unlock(&cdev_softlink_lock);
+
+	result = sysfs_create_link(cdev_softlink_kobj,
+				&cdev->device.kobj, cdev->type);
+	if (result)
+		dev_err(&cdev->device, "Failed to create cdev_map soft link\n");
 
 	/* Add 'this' new cdev to the global cdev list */
 	mutex_lock(&thermal_list_lock);
@@ -1287,11 +1361,15 @@ thermal_zone_device_register(const char *type, int trips, int mask,
 	int result;
 	int count;
 	struct thermal_governor *governor;
+	static struct kobject *tz_softlink_kobj;
 
 	if (!type || strlen(type) == 0)
 		return ERR_PTR(-EINVAL);
 
 	if (type && strlen(type) >= THERMAL_NAME_LENGTH)
+		return ERR_PTR(-EINVAL);
+
+	if (!strcmp(type, ""))
 		return ERR_PTR(-EINVAL);
 
 	if (trips > THERMAL_MAX_TRIPS || trips < 0 || mask >> trips)
@@ -1334,23 +1412,6 @@ thermal_zone_device_register(const char *type, int trips, int mask,
 	atomic_set(&tz->need_update, 1);
 
 	dev_set_name(&tz->device, "thermal_zone%d", tz->id);
-	if (strcmp(tz->type, "skin-therm") ==  0) {
-		skin_tz = tz;
-		dev_set_name(&tz->device, tz->type);
-	} else if (strcmp(tz->type, "msm-therm") ==  0) {
-		msm_tz = tz;
-		dev_set_name(&tz->device, tz->type);
-	} else if (strcmp(tz->type, "mmw-pa1-usr") ==  0)
-		xo_mmw1_tz = tz;
-	else if (strcmp(tz->type, "modem-mmw2-usr") ==  0)
-		modem_mmw2_tz = tz;
-	else if (strcmp(tz->type, "mmw-pa1-usr") ==  0)
-		pa1_mmw0_tz = tz;
-	else if (strcmp(tz->type, "skin-therm-usr") ==  0)
-		modem_skin_tz = tz;
-	else if (strcmp(tz->type, "camera-flash-therm") == 0)
-		dev_set_name(&tz->device, tz->type);
-
 	result = device_register(&tz->device);
 	if (result)
 		goto remove_device_groups;
@@ -1400,6 +1461,25 @@ thermal_zone_device_register(const char *type, int trips, int mask,
 	/* Update the new thermal zone and mark it as already updated. */
 	if (atomic_cmpxchg(&tz->need_update, 1, 0))
 		thermal_zone_device_update(tz, THERMAL_EVENT_UNSPECIFIED);
+
+	mutex_lock(&tz_softlink_lock);
+	if (tz_softlink_kobj == NULL) {
+		tz_softlink_kobj = kobject_create_and_add("tz-by-name",
+						tz->device.kobj.parent);
+		result = sysfs_create_link(&tz->device.class->p->subsys.kobj,
+							tz_softlink_kobj,
+							"tz-by-name");
+		if (result) {
+			dev_err(&tz->device,
+				"Fail to create tz_map soft link in class\n");
+		}
+	}
+	mutex_unlock(&tz_softlink_lock);
+
+	result = sysfs_create_link(tz_softlink_kobj,
+				&tz->device.kobj, tz->type);
+	if (result)
+		dev_err(&tz->device, "Failed to create tz_map soft link\n");
 
 	return tz;
 
@@ -1514,6 +1594,43 @@ exit:
 	return ref;
 }
 EXPORT_SYMBOL_GPL(thermal_zone_get_zone_by_name);
+
+/**
+ * thermal_zone_get_cdev_by_name() - search for a cooling device and returns
+ * its ref.
+ * @name: thermal cdev name to fetch the temperature
+ *
+ * When only one cdev is found with the passed name, returns a reference to it.
+ *
+ * Return: On success returns a reference to an unique thermal cooling device
+ * with matching name equals to @name, an ERR_PTR otherwise (-EINVAL for
+ * invalid paramenters, -ENODEV for not found and -EEXIST for multiple matches).
+ */
+struct thermal_cooling_device *thermal_zone_get_cdev_by_name(const char *name)
+{
+	struct thermal_cooling_device *pos = NULL, *ref = ERR_PTR(-EINVAL);
+	unsigned int found = 0;
+
+	if (!name)
+		return ref;
+
+	mutex_lock(&thermal_list_lock);
+	list_for_each_entry(pos, &thermal_cdev_list, node)
+		if (!strncasecmp(name, pos->type, THERMAL_NAME_LENGTH)) {
+			found++;
+			ref = pos;
+		}
+	mutex_unlock(&thermal_list_lock);
+
+	/* nothing has been found, thus an error code for it */
+	if (found == 0)
+		return ERR_PTR(-ENODEV);
+	if (found > 1)
+		return ERR_PTR(-EEXIST);
+	return ref;
+
+}
+EXPORT_SYMBOL_GPL(thermal_zone_get_cdev_by_name);
 
 #ifdef CONFIG_NET
 static const struct genl_multicast_group thermal_event_mcgrps[] = {
@@ -1647,118 +1764,44 @@ static struct notifier_block thermal_pm_nb = {
 	.notifier_call = thermal_pm_notify,
 };
 
-static int update_thermal_target(struct thermal_zone_device *tz,
-	unsigned long val, int thermal_type)
-{
-	int ret = -1;
-	int temperature = 0, trip = 0;
+#ifdef CONFIG_THERMAL_SWITCH
+int thermal_message_device_register(void) {
+	struct thermal_message_device *thermal_msg;
+	int result = 0;
 
-	pr_info("%s::val = %ul, thermal_type = %d\n",
-			__func__, val, thermal_type);
+	thermal_msg = kzalloc(sizeof(struct thermal_message_device),GFP_KERNEL);
+	thermal_msg->device.class = &thermal_class;
+	dev_set_name(&thermal_msg->device,"thermal_message");
 
-	if (val > THERMAL_MAX_MASK - 1) {
-		pr_err("%s: The input parameter is illegal, val = %ul\n",
-					__func__, val);
-		return -EINVAL;
+	result = device_register(&thermal_msg->device);
+	if (result) {
+		kfree(thermal_msg);
+		return result;
 	}
 
-	if (!tz->ops->set_trip_temp) {
-		pr_err("%s: set_trip_temp is NULL!\n", __func__);
-		return -EINVAL;
-	}
+	result = device_create_file(&thermal_msg->device,&dev_attr_sconfig);
 
-	trip = (val & THERMAL_TRIP_POINT) >> 7;
-	temperature = THERMAL_TEMP_MASK & val;
+	if (result)
+		goto unregister;
+
+	result = device_create_file(&thermal_msg->device,&dev_attr_temp_state);
+
+	if (result)
+		goto unregister;
 
 
-	pr_err("%s: trip = %d, temp = %d\n", __func__, trip, temperature);
+	return result;
 
-	if (temperature < 30) {
-		pr_err("%s: temp trip is too small!!\n", __func__);
-		return -EPERM;
-	}
-
-	if (((temperature > 86) && (thermal_type == 0))|
-		((temperature > 61) && (thermal_type == 1))) {
-		pr_err("%s: temp trip is too larger!!\n", __func__);
-		return -EPERM;
-	}
-
-	ret = tz->ops->set_trip_temp(tz, trip, temperature*1000);
-	if (ret)
-		return ret;
-
-	thermal_zone_device_update(tz, THERMAL_EVENT_UNSPECIFIED);
-	pr_notice("%s: update_thermal config successful\n", __func__);
-	return ret;
+unregister:
+	device_unregister(&thermal_msg->device);
+	return result;
 }
 
-static int pa1_mmw0_thermal_qos_handler(struct notifier_block *b, unsigned long val, void *v)
-{
-	return update_thermal_target(pa1_mmw0_tz, val, 0);
+
+void thermal_message_device_unregister(void) {
+	//Do nothing
 }
-
-static struct notifier_block pa1_mmw0_thermal_qos_notifier = {
-	.notifier_call = pa1_mmw0_thermal_qos_handler,
-};
-
-static int xo_mmw1_thermal_qos_handler(struct notifier_block *b, unsigned long val, void *v)
-{
-	return update_thermal_target(xo_mmw1_tz, val, 0);
-}
-
-static struct notifier_block xo_mmw1_thermal_qos_notifier = {
-	.notifier_call = xo_mmw1_thermal_qos_handler,
-};
-
-static int modem_skin_thermal_qos_handler(struct notifier_block *b, unsigned long val, void *v)
-{
-	return update_thermal_target(modem_skin_tz, val, 0);
-}
-
-static struct notifier_block modem_skin_thermal_qos_notifier = {
-	.notifier_call = modem_skin_thermal_qos_handler,
-};
-
-static int modem_mmw2_qos_handler(struct notifier_block *b, unsigned long val, void *v)
-{
-	return update_thermal_target(modem_mmw2_tz, val, 0);
-}
-
-static struct notifier_block modem_mmw2_qos_notifier = {
-	.notifier_call = modem_mmw2_qos_handler,
-};
-
-static int msm_thermal_qos_handler(struct notifier_block *b, unsigned long val, void *v)
-{
-	return update_thermal_target(msm_tz, val, 0);
-}
-
-static struct notifier_block msm_thermal_qos_notifier = {
-	.notifier_call = msm_thermal_qos_handler,
-};
-
-static int skin_thermal_qos_handler(struct notifier_block *b, unsigned long val, void *v)
-{
-	return update_thermal_target(skin_tz, val, 1);
-}
-
-static struct notifier_block skin_thermal_qos_notifier = {
-	.notifier_call = skin_thermal_qos_handler,
-};
-
-void add_therm_pm_qos_notifier(void)
-{
-	pr_err("register_pm_qos_notifier\n");
-	/*Power Teams add dynamic thermal qos notify */
-	pm_qos_add_notifier(PM_QOS_MSM_THERMAL, &msm_thermal_qos_notifier);
-	pm_qos_add_notifier(PM_QOS_SKIN_THERMAL, &skin_thermal_qos_notifier);
-	pm_qos_add_notifier(PM_QOS_MODEM_SKIN_THERMAL, &modem_skin_thermal_qos_notifier);
-	pm_qos_add_notifier(PM_QOS_MMW1_THERMAL, &xo_mmw1_thermal_qos_notifier);
-	pm_qos_add_notifier(PM_QOS_MMW0_THERMAL,
-				&pa1_mmw0_thermal_qos_notifier);
-	pm_qos_add_notifier(PM_QOS_MMW2_THERMAL, &modem_mmw2_qos_notifier);
-}
+#endif //CONFIG_THERMAL_SWITCH
 
 static int __init thermal_init(void)
 {
@@ -1791,7 +1834,9 @@ static int __init thermal_init(void)
 		pr_warn("Thermal: Can not register suspend notifier, return %d\n",
 			result);
 
-	add_therm_pm_qos_notifier();
+#ifdef CONFIG_THERMAL_SWITCH
+	result = thermal_message_device_register();
+#endif //CONFIG_THERMAL_SWITCH
 
 	return 0;
 
@@ -1812,6 +1857,9 @@ error:
 
 static void thermal_exit(void)
 {
+#ifdef CONFIG_THERMAL_SWITCH
+	thermal_message_device_unregister();
+#endif //CONFIG_THERMAL_SWITCH
 	unregister_pm_notifier(&thermal_pm_nb);
 	of_thermal_destroy_zones();
 	destroy_workqueue(thermal_passive_wq);

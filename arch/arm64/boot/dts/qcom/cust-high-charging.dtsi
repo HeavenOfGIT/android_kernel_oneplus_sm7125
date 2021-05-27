@@ -1,0 +1,70 @@
+&soc {
+	onewire_gpio: onewire_gpio {
+		compatible = "aaabbb,onewire_gpio";
+		label = "xm_onewire";
+		aaabbb,version = <1>;
+		aaabbb,ow_gpio = <&tlmm 93 0x00>;
+		aaabbb,gpio_number = <93>;
+		mi,onewire-gpio-cfg-addr = <0x0395D000 0x4>;
+		pinctrl-names = "onewire_active", "onewire_sleep";
+		pinctrl-0 = <&onewire_gpio_active>;
+		pinctrl-1 = <&onewire_gpio_sleep>;
+		status = "ok";
+	};
+
+	maxim_ds28e16: maxim_ds28e16 {
+		compatible = "maxim,ds28e16";
+		label = "max_ds28e16";
+		maxim,version = <1>;
+		status = "ok";
+	};
+};
+
+&tlmm {
+	onewire_gpio_active: onewire_gpio_active {
+		mux {
+			pins = "gpio93";
+			function = "gpio";
+		};
+
+		config {
+			pins = "gpio93";
+			drive-strength = <2>;
+			bias-pull-up; /* No PULL */
+		};
+	};
+
+	onewire_gpio_sleep: onewire_gpio_sleep {
+		mux {
+			pins = "gpio93";
+			function = "gpio";
+		};
+
+		config {
+			pins = "gpio93";
+			drive-strength = <2>;
+			bias-pull-up;
+		};
+	};
+};
+
+&pm6150_charger {
+	qcom,fcc-max-ua = <5900000>;
+	qcom,fv-max-uv = <4480000>;
+	qcom,thermal-mitigation = <3000000 2500000 2000000 1500000 1000000 500000>;
+	mi,six-pin-step-chg;
+	mi,support-ffc;
+	qcom,temp-27W-enable;
+};
+
+&smb1396_div2_cp_master {
+	mi,six-pin-batt;
+	mi,qc3p5-ffc-batt;
+};
+
+&pm6150_pdphy {
+	mi,pd_curr_limit = <1>;
+	mi,pd_max_curr_limit = <4000000>;
+	mi,limit_pd_vbus = <1>;
+	mi,pd_vbus_max_limit = <9500000>;
+};
